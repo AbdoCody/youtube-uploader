@@ -27,7 +27,7 @@ CONFIG_SERVER_URL = "https://boulakhbar.com/config_update.php"
 # =========================================================
 
 # ---------------------------------------------------------
-# --- HELPER SCRIPT CONTENTS (Used for Self-Replacement) ---
+# --- HELPER SCRIPT CONTENTS (Used for Cross-Platform Self-Replacement) ---
 # ---------------------------------------------------------
 
 # --- HELPER SCRIPT CONTENT (FOR WINDOWS) ---
@@ -35,17 +35,22 @@ HELPER_BATCH_CONTENT = """@echo off
 ECHO Running update cleanup...
 TIMEOUT /T 2 /NOBREAK >nul
 
+:: Define filenames
+SET OLD_EXE=start.bin
+SET NEW_EXE=start_NEW.bin
+SET HELPER_SCRIPT=%%0
+
 :: Delete the old executable (start.bin)
-IF EXIST start.bin (
-    DEL start.bin
+IF EXIST %OLD_EXE% (
+    DEL %OLD_EXE%
     ECHO Old executable deleted.
 ) ELSE (
     ECHO Old executable not found, proceeding.
 )
 
 :: Rename the new executable (start_NEW.bin)
-IF EXIST start_NEW.bin (
-    RENAME start_NEW.bin start.bin
+IF EXIST %NEW_EXE% (
+    RENAME %NEW_EXE% %OLD_EXE%
     ECHO New executable renamed to start.bin.
 ) ELSE (
     ECHO Error: Downloaded file not found. Update failed.
@@ -54,11 +59,11 @@ IF EXIST start_NEW.bin (
 
 :: Launch the new executable
 ECHO Launching new start.bin...
-start start.bin
+start %OLD_EXE%
 
 :END
 :: Clean up the helper script itself
-DEL %0
+DEL %HELPER_SCRIPT%
 EXIT
 """
 
@@ -162,16 +167,25 @@ def handle_update():
     current_exe_path = os.path.abspath(sys.argv[0])
     new_exe_temp_name = "start_NEW.bin" 
 
-    # Determine helper script type based on OS
+    # --- NEW LOGIC: DETERMINE OS AND FILE NAMES ---
+    # Determine the OS key to lookup the correct download URL
     if os.name == 'nt':
         # Windows
+        os_key = 'Windows'
+        # The helper script name for Windows
         helper_script_name = "update_helper.bat"
         helper_content = HELPER_BATCH_CONTENT
     else:
         # macOS, Linux, etc. (POSIX systems)
+        os_key = 'Mac'
+        # The helper script name for Mac/Linux
         helper_script_name = "update_helper.sh"
         helper_content = HELPER_SHELL_CONTENT
     
+    # The final executable name for the replacement script (consistent across platforms)
+    final_exe_name = "start.bin"
+    # ---------------------------------------------
+
     try:
         print("\n[UPDATE CHECK] Checking for required maintenance and updates...")
         response = requests.get(CONFIG_SERVER_URL, timeout=10)
@@ -179,8 +193,14 @@ def handle_update():
         config = response.json()
         
         required_version = config.get('minimum_required_version', CURRENT_VERSION)
-        download_url = config.get('update_download_url')
         
+        # --- NEW LOGIC: RETRIEVE CORRECT URL ---
+        # Get the dictionary of all download URLs
+        download_urls = config.get('download_urls', {}) 
+        # Select the specific URL for the current OS
+        download_url = download_urls.get(os_key)
+        # -------------------------------------
+
         # Check 1: Global Kill Switch
         if not config.get('global_active', True):
             print(f"\n[MAINTENANCE] Tool is temporarily offline. {config.get('maintenance_message', 'Check back later.')}")
@@ -192,6 +212,13 @@ def handle_update():
             print(f"       [CRITICAL UPDATE REQUIRED] (v{required_version})")
             print("=======================================================")
             
+            # --- CRITICAL CHECK: ENSURE URL WAS FOUND ---
+            if not download_url:
+                print(f"\n[ERROR] Update server failed to provide a download link for {os_key}. Cannot update.")
+                # We exit here because an update is required but we can't get the file.
+                sys.exit(1) 
+            # --------------------------------------------
+
             # 1. Download the new binary
             print(f"Downloading new version from: {download_url}")
             new_binary_response = requests.get(download_url, stream=True)
@@ -227,6 +254,7 @@ def handle_update():
         return True
 
     except requests.exceptions.RequestException as e:
+        # If the server connection fails, we log a warning and proceed with the old version.
         print(f"\n[WARNING] Could not connect to update server. Proceeding without version check.")
         return True
     except Exception as e:
