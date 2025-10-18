@@ -1,0 +1,76 @@
+# .github/workflows/build.yml
+
+name: Build Cross-Platform Executables
+
+on:
+  # This workflow runs when you push changes to the main branch
+  push:
+    branches:
+      - main
+  # Allows you to manually trigger the workflow from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  # --- JOB 1: Build for macOS ---
+  build_macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies (PyInstaller and your requirements)
+        run: pip install pyinstaller requests google-api-python-client google-auth-oauthlib
+
+      - name: Compile with PyInstaller (macOS)
+        # We use PyInstaller here as it is very reliable for onefile builds
+        run: pyinstaller --noconfirm --onefile --console start.py
+        
+      - name: Rename and Archive macOS Binary
+        # PyInstaller on Mac often names the output 'start'. We ensure it is 'start.bin'
+        run: |
+          mv dist/start start.bin
+          
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: start-macos-bin
+          path: start.bin
+
+  # ------------------------------
+  
+  # --- JOB 2: Build for Windows ---
+  build_windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies (PyInstaller and your requirements)
+        run: pip install pyinstaller requests google-api-python-client google-auth-oauthlib
+        
+      - name: Compile with PyInstaller (Windows)
+        # The output file will be named 'start.exe'
+        run: pyinstaller --noconfirm --onefile --console start.py
+        
+      - name: Rename and Archive Windows Executable
+        # This is the CRITICAL step. We rename start.exe to start.bin
+        run: Rename-Item -Path "dist/start.exe" -NewName "start.bin"
+        shell: powershell
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: start-windows-bin
+          path: start.bin
+          
+  # ------------------------------
