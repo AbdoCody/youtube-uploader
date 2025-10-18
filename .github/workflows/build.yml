@@ -43,7 +43,7 @@ jobs:
 
   # ------------------------------
   
-  # --- JOB 2: Build for Windows ---
+ # --- JOB 2: Build for Windows (CORRECTED) ---
   build_windows:
     runs-on: windows-latest
     steps:
@@ -56,21 +56,23 @@ jobs:
           python-version: '3.10'
           
       - name: Install dependencies (PyInstaller and your requirements)
+        # Note: You must ensure all required packages are listed here!
         run: pip install pyinstaller requests google-api-python-client google-auth-oauthlib
         
       - name: Compile with PyInstaller (Windows)
-        # The output file will be named 'start.exe'
+        # The output file is created at dist/start.exe
         run: pyinstaller --noconfirm --onefile --console start.py
         
-      - name: Rename and Archive Windows Executable
-        # This is the CRITICAL step. We rename start.exe to start.bin
+      - name: Rename Executable (start.exe -> start.bin)
+        # The compiled file is inside the 'dist' folder. We rename it there.
         run: Rename-Item -Path "dist/start.exe" -NewName "start.bin"
         shell: powershell
 
       - name: Upload Windows Artifact
+        # We now point directly to the renamed file inside the dist directory for upload.
         uses: actions/upload-artifact@v4
         with:
           name: start-windows-bin
-          path: start.bin
+          path: dist/start.bin 
           
-  # ------------------------------
+  # -----------------------------------------------
