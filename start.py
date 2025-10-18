@@ -13,24 +13,107 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# =========================================================
-# --- CONFIGURATION (UPDATE THESE VALUES) ---
-# Set the current version of THIS executable
-CURRENT_VERSION = 1.0 # <<<<<<<<<<<< UPDATE THIS NUMBER FOR NEW RELEASES
 
-# URL for license verification (calls check_license.php)
+CURRENT_VERSION = 1.0 
+
+
 LICENSE_SERVER_URL = "https://boulakhbar.com/check_license.php" 
 LICENSE_KEY_FILE = 'license.key'
 
-# URL for update check (calls config_update.php)
+
 CONFIG_SERVER_URL = "https://boulakhbar.com/config_update.php" 
-# =========================================================
 
-# ---------------------------------------------------------
-# --- HELPER SCRIPT CONTENTS (Used for Cross-Platform Self-Replacement) ---
-# ---------------------------------------------------------
 
-# --- HELPER SCRIPT CONTENT (FOR WINDOWS) ---
+PROXIES_FILE = os.path.join('proxies-list', 'proxies.txt')
+# --------------------
+
+
+AVAILABLE_PROXIES = [] 
+
+USE_PROXIES_FLAG = False 
+
+
+
+def parse_proxy_line(line):
+    """Parses a proxy string into the requests library format."""
+    line = line.strip()
+    if line.startswith('#') or not line:
+        return None
+        
+
+    if '@' in line:
+
+        return {'http': f"http://{line}", 'https': f"http://{line}"}
+    
+
+    if ':' in line:
+        return {'http': f"http://{line}", 'https': f"http://{line}"}
+        
+    return None
+
+def load_proxies():
+    """Loads proxies from file, filtering out completed ones (marked with ✅)."""
+    global AVAILABLE_PROXIES
+    global USE_PROXIES_FLAG
+
+    if not os.path.exists(PROXIES_FILE):
+        print(f"\n[PROXY INFO] Proxy file not found at '{PROXIES_FILE}'. Skipping proxy use.")
+        USE_PROXIES_FLAG = False
+        return []
+
+    try:
+        with open(PROXIES_FILE, 'r') as f:
+            lines = f.readlines()
+    except Exception as e:
+        print(f"\n[PROXY ERROR] Could not read '{PROXIES_FILE}'. Error: {e}")
+        USE_PROXIES_FLAG = False
+        return []
+
+    available_lines = []
+    
+    for line in lines:
+        if line.strip().endswith('✅'):
+
+            continue
+        
+        parsed = parse_proxy_line(line)
+        if parsed:
+            AVAILABLE_PROXIES.append({
+                'raw': line.strip(), 
+                'parsed': parsed
+            })
+            available_lines.append(line)
+    
+    if not AVAILABLE_PROXIES:
+        print(f"\n[PROXY INFO] Proxy file found, but no unused proxies available. Continuing without proxies.")
+        USE_PROXIES_FLAG = False
+        return []
+        
+    print(f"\n[PROXY STATUS] {len(AVAILABLE_PROXIES)} unused proxies loaded.")
+    USE_PROXIES_FLAG = True
+    return AVAILABLE_PROXIES
+
+def mark_proxy_as_used(raw_proxy_line):
+    """Writes the '✅' mark next to the successfully used proxy."""
+    try:
+        with open(PROXIES_FILE, 'r') as f:
+            lines = f.readlines()
+        
+        with open(PROXIES_FILE, 'w') as f:
+            for line in lines:
+
+                if line.strip() == raw_proxy_line:
+                    f.write(f"{line.strip()} ✅\n")
+                    print(f"[PROXY SUCCESS] Marked proxy: {raw_proxy_line} as used.")
+                elif line.strip() == f"{raw_proxy_line} ✅":
+                   
+                    f.write(line)
+                else:
+                    f.write(line)
+    except Exception as e:
+        print(f"[PROXY WARNING] Failed to mark proxy as used in file: {e}")
+
+
 HELPER_BATCH_CONTENT = """@echo off
 ECHO Running update cleanup...
 TIMEOUT /T 2 /NOBREAK >nul
@@ -67,7 +150,6 @@ DEL %HELPER_SCRIPT%
 EXIT
 """
 
-# --- HELPER SCRIPT CONTENT (FOR MACOS/LINUX) ---
 HELPER_SHELL_CONTENT = """#!/bin/bash
 # Helper script to replace the old executable
 # Use 'sleep' to ensure the main script has fully exited and released the file lock
@@ -107,17 +189,16 @@ rm "$HELPER_SCRIPT"
 exit 0
 """
 
-# ---------------------------------------------------------
-# --- SECURITY AND UPDATE FUNCTIONS ---
-# ---------------------------------------------------------
 
-def check_subscription():
+
+
+def check_subscription(proxies=None):
     """
     Performs the critical license check against the remote server.
-    If verification fails, the script terminates immediately.
+    Accepts an optional 'proxies' argument.
     """
     try:
-        # 1. Read the license key from the distributed file
+
         with open(LICENSE_KEY_FILE, 'r') as f:
             license_key = f.read().strip()
     except FileNotFoundError:
@@ -128,7 +209,9 @@ def check_subscription():
     
     try:
         print("\n[SECURITY CHECK] Verifying subscription with license server...")
-        response = requests.post(LICENSE_SERVER_URL, json=payload, timeout=15)
+        
+
+        response = requests.post(LICENSE_SERVER_URL, json=payload, proxies=proxies, timeout=15)
         response.raise_for_status() 
         
         try:
@@ -139,6 +222,8 @@ def check_subscription():
             
         if data.get('status') == 'active':
             print(f"[STATUS] Verification successful. Subscription is ACTIVE.")
+            if 'message' in data:
+                print(f"[INFO] {data['message']}")
             time.sleep(1 + random.uniform(0.1, 0.5)) 
             return True
         
@@ -154,54 +239,49 @@ def check_subscription():
         print(f"\n[LICENSE FAILURE] Access denied (Code: {e.response.status_code}). Please check your payment status.")
         sys.exit(1)
     except requests.exceptions.RequestException as e:
-        print(f"\n[CONNECTION ERROR] Could not connect to the license server. Check internet connection.")
-        sys.exit(1)
+
+        error_message = f"Could not connect to the license server (Proxy: {proxies.get('http') if proxies else 'None'}). Check connection or proxy settings."
+        
+        if proxies:
+            print(f"\n[PROXY ERROR] {error_message}")
+            return False 
+        else:
+            print(f"\n[CONNECTION ERROR] {error_message}")
+            sys.exit(1)
+            
     except Exception as e:
         print(f"\n[CRITICAL ERROR] An unknown error occurred during license check: {e}")
         sys.exit(1)
 
 
-def handle_update():
+def handle_update(proxies=None):
     """Checks server for required version and handles the cross-platform self-replacement update."""
     global CURRENT_VERSION
-    current_exe_path = os.path.abspath(sys.argv[0])
     new_exe_temp_name = "start_NEW.bin" 
+    
 
-    # --- NEW LOGIC: DETERMINE OS AND FILE NAMES ---
-    # Determine the OS key to lookup the correct download URL
     if os.name == 'nt':
-        # Windows
         os_key = 'Windows'
-        # The helper script name for Windows
         helper_script_name = "update_helper.bat"
         helper_content = HELPER_BATCH_CONTENT
     else:
-        # macOS, Linux, etc. (POSIX systems)
         os_key = 'Mac'
-        # The helper script name for Mac/Linux
         helper_script_name = "update_helper.sh"
         helper_content = HELPER_SHELL_CONTENT
     
-    # The final executable name for the replacement script (consistent across platforms)
-    final_exe_name = "start.bin"
-    # ---------------------------------------------
-
     try:
         print("\n[UPDATE CHECK] Checking for required maintenance and updates...")
-        response = requests.get(CONFIG_SERVER_URL, timeout=10)
+   
+        response = requests.get(CONFIG_SERVER_URL, proxies=proxies, timeout=10)
         response.raise_for_status()
         config = response.json()
         
         required_version = config.get('minimum_required_version', CURRENT_VERSION)
         
-        # --- NEW LOGIC: RETRIEVE CORRECT URL ---
-        # Get the dictionary of all download URLs
         download_urls = config.get('download_urls', {}) 
-        # Select the specific URL for the current OS
         download_url = download_urls.get(os_key)
-        # -------------------------------------
 
-        # Check 1: Global Kill Switch
+   
         if not config.get('global_active', True):
             print(f"\n[MAINTENANCE] Tool is temporarily offline. {config.get('maintenance_message', 'Check back later.')}")
             sys.exit(1)
@@ -212,84 +292,93 @@ def handle_update():
             print(f"       [CRITICAL UPDATE REQUIRED] (v{required_version})")
             print("=======================================================")
             
-            # --- CRITICAL CHECK: ENSURE URL WAS FOUND ---
             if not download_url:
                 print(f"\n[ERROR] Update server failed to provide a download link for {os_key}. Cannot update.")
-                # We exit here because an update is required but we can't get the file.
                 sys.exit(1) 
-            # --------------------------------------------
 
-            # 1. Download the new binary
+
             print(f"Downloading new version from: {download_url}")
-            new_binary_response = requests.get(download_url, stream=True)
+
+            new_binary_response = requests.get(download_url, stream=True, proxies=proxies)
             new_binary_response.raise_for_status()
             
-            # 2. Save it with a temporary name
+
             with open(new_exe_temp_name, 'wb') as f:
                 for chunk in new_binary_response.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-            # 3. Create the OS-specific helper script
+
             with open(helper_script_name, 'w') as f:
                 f.write(helper_content)
             
-            # 4. Make the helper script executable (essential for macOS/Linux)
+
             if os.name != 'nt':
                 os.chmod(helper_script_name, 0o755) 
 
-            # 5. Launch the helper script and IMMEDIATELY EXIT the old program
+
             print("\n✅ Download complete. Starting automatic replacement...")
             
             if os.name == 'nt':
-                # Windows: Use 'start' to run the batch script in a new process
                 os.system(f"start {helper_script_name}")
             else:
-                # macOS/Linux: Execute the shell script in the background
                 os.system(f"chmod +x {helper_script_name} && ./{helper_script_name} &") 
 
             print("\nTerminating old version for update. The new version will start automatically.")
-            sys.exit(0) # IMPORTANT: Exit to release the file lock
+            sys.exit(0)
 
         print("[STATUS] Software version is current.")
         return True
 
     except requests.exceptions.RequestException as e:
-        # If the server connection fails, we log a warning and proceed with the old version.
-        print(f"\n[WARNING] Could not connect to update server. Proceeding without version check.")
-        return True
+        error_message = f"Could not connect to update server (Proxy: {proxies.get('http') if proxies else 'None'}). Proceeding without version check."
+        
+        if proxies:
+            print(f"\n[PROXY WARNING] {error_message}")
+            return False 
+        else:
+            print(f"\n[WARNING] {error_message}")
+            return True 
     except Exception as e:
         print(f"\n[CRITICAL ERROR] Update check failed. Error: {e}")
-        return True
+        return True 
 
-# ---------------------------------------------------------
-# --- YOUTUBE FUNCTIONS (YOUR ORIGINAL CODE) ---
-# ---------------------------------------------------------
 
-def get_authenticated_service(client_secret_file, credentials_file):
+
+def get_authenticated_service(client_secret_file, credentials_file, proxies=None):
     SCOPES = ['https://www.googleapis.com/auth/youtube']
     API_SERVICE_NAME = 'youtube'
     API_VERSION = 'v3'
     credentials = None
+    
 
+    http_proxy = proxies['http'] if proxies else None
+    
+
+    
     if os.path.exists(credentials_file):
         with open(credentials_file, 'rb') as token:
             credentials = pickle.load(token)
 
     if not credentials or not credentials.valid:
         if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
+
+            credentials.refresh(Request(proxies=proxies))
         else:
+            
             flow = InstalledAppFlow.from_client_secrets_file(
                 client_secret_file, SCOPES)
             credentials = flow.run_local_server(port=0)
         with open(credentials_file, 'wb') as token:
             pickle.dump(credentials, token)
             print(f"Credentials renewed and saved to {credentials_file}")
+    
+ 
+    http_request = Request(proxies=proxies)
 
-    return build(API_SERVICE_NAME, API_VERSION, credentials=credentials)
+    return build(API_SERVICE_NAME, API_VERSION, credentials=credentials, request=http_request)
 
 def initialize_upload(youtube, file, title, description, category, privacy, tags_list):
-    
+
     body = {
         'snippet': {
             'title': title,
@@ -321,6 +410,7 @@ def initialize_upload(youtube, file, title, description, category, privacy, tags
     return response.get('id')
 
 def set_thumbnail(youtube, video_id, thumbnail_file):
+
     print(f"Setting thumbnail '{os.path.basename(thumbnail_file)}' for video ID {video_id}...")
     try:
         request = youtube.thumbnails().set(
@@ -332,26 +422,49 @@ def set_thumbnail(youtube, video_id, thumbnail_file):
     except Exception as e:
         print(f"An error occurred while setting the thumbnail: {e}")
 
-# ---------------------------------------------------------
-# --- MAIN EXECUTION ---
-# ---------------------------------------------------------
+
 
 if __name__ == '__main__':
+
+
+    load_proxies() 
     
-    # === CRITICAL SECURITY CHECKS (Must be run first!) ===
-    check_subscription() 
-    handle_update() 
-    # =====================================================
+    initial_proxy = AVAILABLE_PROXIES[0]['parsed'] if USE_PROXIES_FLAG else None
     
+
+    if not check_subscription(proxies=initial_proxy):
+    
+        print("\n[PROXY FAILED] The initial connection/proxy test failed.")
+        while True:
+            response = input("Do you want to continue normal uploading without proxies? (Yes/No): ").lower().strip()
+            if response in ['yes', 'y']:
+                USE_PROXIES_FLAG = False
+                print("[CONTINUING] Disabling proxy use and continuing with system connection.")
+
+                if not check_subscription(proxies=None):
+                    print("\nFATAL ERROR: Cannot reach license server even without proxies. Exiting.")
+                    sys.exit(1)
+                break
+            elif response in ['no', 'n']:
+                print("[STOPPING] Tool stopped as requested.")
+                sys.exit(1)
+            else:
+                print("Invalid input. Please type 'Yes' or 'No'.")
+
+
+    handle_update(proxies=initial_proxy if USE_PROXIES_FLAG else None) 
+
+
+
     GREEN = '\033[92m'
     RESET = '\033[0m'
     
     signature = """
-============================================
-    Welcome to YouTube Videos Uploader
+=================================================
+       Welcome to YouTube Videos Uploader
               ----------------
-    This tool made by @RealAbdeljalil
-============================================
+  For any help, Contact us on Telegram @Lmaroky
+=================================================
 """
     
     os.system('cls' if os.name == 'nt' else 'clear') 
@@ -362,13 +475,15 @@ if __name__ == '__main__':
     CHANNEL_DIR = 'youtube-channels'
     CLIENT_SECRET_FILE = 'client_secret.json'
     VIDEO_DIR = 'youtube-video'
-    
     DESCRIPTION_DIR = 'description'
     THUMBNAIL_DIR = 'thumbnail-image'
     TITLE_FILE_PATH = os.path.join('video-title', 'title.txt')
     TAGS_FILE_PATH = os.path.join('video-tags', 'tags.txt')
 
     
+
+    
+
     try:
         token_filenames = [f for f in os.listdir(CHANNEL_DIR) if f.endswith('.pkl')]
         if not token_filenames:
@@ -379,7 +494,7 @@ if __name__ == '__main__':
         print(f"Error: The '{CHANNEL_DIR}' folder was not found.")
         sys.exit()
 
-    
+
     try:
         video_files = [f for f in os.listdir(VIDEO_DIR) if f.lower().endswith(('.mp4', '.mov', '.avi', '.mkv'))]
         if not video_files:
@@ -390,12 +505,10 @@ if __name__ == '__main__':
         print(f"Error: The '{VIDEO_DIR}' folder was not found.")
         sys.exit()
         
-    
+
     description_list = []
     try:
-        
         description_filenames = [f for f in os.listdir(DESCRIPTION_DIR) if f.lower().endswith('.txt')]
-        
         if description_filenames:
             for filename in description_filenames:
                 file_path = os.path.join(DESCRIPTION_DIR, filename)
@@ -403,101 +516,88 @@ if __name__ == '__main__':
                     description = f.read().strip()
                     if description:
                         description_list.append(description)
-            
-            if description_list:
-                print(f"Successfully loaded {len(description_list)} unique description(s) from '{DESCRIPTION_DIR}'.")
-            else:
-                print(f"Warning: Description files found but all were empty. Using an empty description for all videos.")
-
-        else:
-            print(f"Info: No description files (.txt) found in '{DESCRIPTION_DIR}'. Using an empty description for all videos.")
-            
-    except FileNotFoundError:
-        print(f"Info: The '{DESCRIPTION_DIR}' folder was not found. Using an empty description for all videos.")
-        
-    
+    except: pass
     if description_list:
         description_cycler = cycle(description_list)
     else:
-        
         description_cycler = cycle([""]) 
     
 
-
-    
     thumbnail_paths = []
     try:
         image_files = [f for f in os.listdir(THUMBNAIL_DIR) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
         if image_files:
             thumbnail_paths = [os.path.join(THUMBNAIL_DIR, f) for f in image_files]
-            print(f"Found {len(thumbnail_paths)} thumbnail(s) in '{THUMBNAIL_DIR}'.")
-    except FileNotFoundError:
-        print(f"Info: Thumbnail folder '{THUMBNAIL_DIR}' not found. Skipping thumbnails.")
+    except: pass
 
 
-    
     video_titles = []
     try:
         with open(TITLE_FILE_PATH, 'r', encoding='utf-8') as f:
             video_titles = [line.strip() for line in f if line.strip()]
         if video_titles:
-            print(f"Successfully loaded {len(video_titles)} custom title(s) from '{TITLE_FILE_PATH}'.")
             title_cycler = cycle(video_titles)
         else:
-            print(f"Warning: Title file is empty. Using video filenames as titles.")
-    except FileNotFoundError:
-        print(f"Info: Title file not found. Using video filenames as titles.")
-        
-    
+            title_cycler = None
+    except: 
+        title_cycler = None
+
+
     tags_list = None
     try:
         with open(TAGS_FILE_PATH, 'r', encoding='utf-8') as f:
             content = f.read().strip()
             if content:
                 tags_list = [tag.strip() for tag in content.split(',') if tag.strip()]
-                print(f"Successfully loaded {len(tags_list)} tag(s) from '{TAGS_FILE_PATH}'.")
-            else:
-                print(f"Info: Tags file found but is empty. Skipping tags.")
-    except FileNotFoundError:
-        print(f"Info: Tags file not found. Skipping tags.")
+    except: pass
 
     print(f"\nFound {len(video_files)} video(s) to upload to {len(channel_tokens)} channel(s).")
     
     
     video_cycler = cycle(video_paths)
-    if 'title_cycler' not in locals(): 
-        title_cycler = None
     
+
+    proxy_cycler = cycle(AVAILABLE_PROXIES) if USE_PROXIES_FLAG and AVAILABLE_PROXIES else None
     
     for i, token_file in enumerate(channel_tokens):
         
-        
-        if len(video_files) == 1:
-            video_file_path = video_paths[0]
-            video_filename = os.path.basename(video_file_path)
-        else:
-            video_file_path = next(video_cycler)
-            video_filename = os.path.basename(video_file_path)
+        current_proxy_data = None
+        current_proxies_parsed = None
+
+        if proxy_cycler:
+            try:
+
+                current_proxy_data = next(proxy_cycler)
+                current_proxies_parsed = current_proxy_data['parsed']
+                raw_proxy_line = current_proxy_data['raw']
+                print(f"\n[PROXY USE] Assigning proxy for Channel {i+1}: {raw_proxy_line}")
+            except StopIteration:
+                # All proxies used up, switch off proxy mode
+                print("\n[PROXY INFO] All proxies have been used. Continuing without proxies.")
+                proxy_cycler = None # Stop cycling
+                current_proxies_parsed = None
+                raw_proxy_line = None
 
         
-        if title_cycler:
-            video_title = next(title_cycler)
-        else:
-            video_title = os.path.splitext(video_filename)[0]
-            
+
+        video_file_path = next(video_cycler) if len(video_paths) > 1 else video_paths[0]
+        video_filename = os.path.basename(video_file_path)
         
+        video_title = next(title_cycler) if title_cycler else os.path.splitext(video_filename)[0]
         current_description = next(description_cycler)
 
         print(f"\n===== Processing Channel {i+1}/{len(channel_tokens)}: {os.path.basename(token_file)} =====")
         print(f"    -> Assigned Video: {video_filename} (Title: {video_title})")
         
-        print(f"    -> Description Length: {len(current_description)} characters")
-
-
         try:
-            youtube_service = get_authenticated_service(CLIENT_SECRET_FILE, token_file)
+
+            youtube_service = get_authenticated_service(
+                CLIENT_SECRET_FILE, 
+                token_file, 
+                proxies=current_proxies_parsed
+            )
             
-            
+
             video_id = initialize_upload(
                 youtube=youtube_service,
                 file=video_file_path,
@@ -509,17 +609,20 @@ if __name__ == '__main__':
             )
 
 
-            
             if video_id and thumbnail_paths:
-                if len(thumbnail_paths) == 1:
-                    chosen_thumbnail = thumbnail_paths[0]
-                else:
-                    chosen_thumbnail = random.choice(thumbnail_paths)
-                
+                chosen_thumbnail = random.choice(thumbnail_paths) if len(thumbnail_paths) > 1 else thumbnail_paths[0]
                 set_thumbnail(youtube_service, video_id, chosen_thumbnail)
+
+ 
+            if video_id and current_proxies_parsed:
+                mark_proxy_as_used(raw_proxy_line)
 
 
         except Exception as e:
-            print(f"An error occurred while processing for {token_file}: {e}")
+
+            print(f"\n[UPLOAD ERROR] An error occurred during upload for {os.path.basename(token_file)}. Error: {e}")
+            if current_proxies_parsed:
+                print(f"[PROXY FAILURE] The assigned proxy {raw_proxy_line} likely failed or was rejected. It will NOT be marked as used.")
+            
     
     print("\n✅ All tasks complete!")
